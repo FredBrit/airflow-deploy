@@ -1,0 +1,15 @@
+# Secrets
+.env
+.env.local
+
+# Runtime
+logs/**/*.log
+!.gitkeep
+__pycache__/
+*.egg-info/
+.dagrun.lock
+.airflowignore
+
+# IDE
+.vscode/
+.idea/
