@@ -4,22 +4,35 @@ set -e
 echo "🚀 Airflow Auto-Deploy Script"
 echo "==============================="
 
+# Парсинг аргументов
+REBUILD=false
+for arg in "$@"; do
+    case $arg in
+        --rebuild|-r)
+            REBUILD=true
+            ;;
+        *)
+            # Неизвестные аргументы игнорируем
+            ;;
+    esac
+done
+
 # 1. Установка системных зависимостей
 echo "📦 Проверяем и устанавливаем зависимости..."
 if command -v apt-get &>/dev/null; then
-    sudo apt-get update -y
+    sudo apt-get update -y >/dev/null 2>&1
     sudo apt-get install -y --no-install-recommends \
         git curl ca-certificates gnupg \
         python3 python3-pip openssl \
-        docker.io docker-compose-plugin || true
+        docker.io docker-compose-plugin >/dev/null 2>&1 || true
 elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
-    sudo dnf install -y git curl python3 openssl docker docker-compose || \
-    sudo yum install -y git curl python3 openssl docker docker-compose || true
+    sudo dnf install -y git curl python3 openssl docker docker-compose >/dev/null 2>&1 || \
+    sudo yum install -y git curl python3 openssl docker docker-compose >/dev/null 2>&1 || true
 fi
 
 # Устанавливаем cryptography для генерации Fernet Key
-pip3 install --break-system-packages cryptography 2>/dev/null || \
-python3 -m pip install --break-system-packages cryptography 2>/dev/null || true
+pip3 install --break-system-packages cryptography >/dev/null 2>&1 || \
+python3 -m pip install --break-system-packages cryptography >/dev/null 2>&1 || true
 
 # Проверка Docker
 if ! command -v docker &>/dev/null; then
@@ -69,17 +82,32 @@ echo "🔧 Настраиваем UID/GID для Docker..."
 export AIRFLOW_UID=$(id -u)
 export AIRFLOW_GID=$(id -g)
 
-# 5. Сборка и запуск
+# 5. Сборка образа
 echo "🏗️  Собираем образ (может занять 2-5 минут)..."
-docker compose build --pull
+if [ "$REBUILD" = true ]; then
+    echo "♻️  Принудительная пересборка (--no-cache)..."
+    docker compose build --pull --no-cache
+else
+    # Первая сборка всегда с --no-cache, последующие используют кэш
+    if [ ! -f .build_done ]; then
+        echo "🆕 Первая сборка --no-cache для чистоты..."
+        docker compose build --pull --no-cache
+        touch .build_done
+    else
+        echo "🔄 Используем кэш для ускорения (добавьте --rebuild для полной пересборки)..."
+        docker compose build --pull
+    fi
+fi
 
+# 6. Инициализация БД
 echo "🗄️  Инициализируем БД и создаём админа..."
 docker compose run --rm --no-deps airflow-init
 
+# 7. Запуск сервисов
 echo "🌐 Запускаем сервисы в фоне..."
 docker compose up -d
 
-# 6. Вывод учетных данных
+# 8. Вывод учетных данных
 ADMIN_USER=$(grep '^_AIRFLOW_WWW_USER_USERNAME=' .env | cut -d'=' -f2)
 ADMIN_PASS=$(grep '^_AIRFLOW_WWW_USER_PASSWORD=' .env | cut -d'=' -f2)
 
@@ -94,7 +122,7 @@ echo ""
 echo "💡 Полезные команды:"
 echo "   docker compose logs -f airflow-apiserver   # Логи UI"
 echo "   docker compose down                         # Остановка"
-echo "   docker compose up -d                        # Запуск"
+echo "   ./scripts/deploy.sh --rebuild              # Пересобрать с нуля"
 echo ""
 echo "⚠️  Для продакшена:"
 echo "   • Замените localhost в .env на домен"
