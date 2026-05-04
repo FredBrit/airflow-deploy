@@ -11,9 +11,6 @@ for arg in "$@"; do
         --rebuild|-r)
             REBUILD=true
             ;;
-        *)
-            # Неизвестные аргументы игнорируем
-            ;;
     esac
 done
 
@@ -62,9 +59,16 @@ if [ ! -f .env ]; then
     API_SEC=$(openssl rand -base64 32 | tr -d '\n')
     WEB_SEC=$(openssl rand -base64 32 | tr -d '\n')
     JWT_SEC=$(openssl rand -base64 32 | tr -d '\n')
+    
     sed -i "s|^AIRFLOW__API__SECRET_KEY=.*|AIRFLOW__API__SECRET_KEY=${API_SEC}|" .env
     sed -i "s|^AIRFLOW__WEBSERVER__SECRET_KEY=.*|AIRFLOW__WEBSERVER__SECRET_KEY=${WEB_SEC}|" .env
-    sed -i "s|^AIRFLOW__API_AUTH__JWT_SECRET=.*|AIRFLOW__API_AUTH__JWT_SECRET=${JWT_SEC}|" .env
+    
+    # JWT_SECRET: обновляем ИЛИ добавляем, если строки нет
+    if grep -q "^AIRFLOW__API_AUTH__JWT_SECRET=" .env; then
+        sed -i "s|^AIRFLOW__API_AUTH__JWT_SECRET=.*|AIRFLOW__API_AUTH__JWT_SECRET=${JWT_SEC}|" .env
+    else
+        echo "AIRFLOW__API_AUTH__JWT_SECRET=${JWT_SEC}" >> .env
+    fi
 
     # Пароли БД и Админа
     DB_PASS=$(openssl rand -base64 16 | tr -d '\n')
@@ -74,7 +78,60 @@ if [ ! -f .env ]; then
 
     echo "✅ Секреты сохранены в .env"
 else
-    echo "✅ .env уже существует, используем его"
+    echo "✅ .env уже существует, проверяем критичные переменные..."
+    
+    # Валидация критичных переменных
+    CRITICAL_VARS=(
+        "AIRFLOW__CORE__FERNET_KEY"
+        "AIRFLOW__API__SECRET_KEY"
+        "AIRFLOW__WEBSERVER__SECRET_KEY"
+        "AIRFLOW__API_AUTH__JWT_SECRET"
+    )
+    
+    MISSING=false
+    for var in "${CRITICAL_VARS[@]}"; do
+        if ! grep -q "^${var}=" .env || grep -q "^${var}=auto_generated$" .env || grep -q "^${var}=CHANGE_ME" .env; then
+            echo "⚠️  Переменная $var требует настройки"
+            MISSING=true
+        fi
+    done
+    
+    if [ "$MISSING" = true ]; then
+        echo "⚠️  Некоторые секреты не настроены. Генерируем недостающие..."
+        
+        # Генерируем только недостающие
+        if ! grep -q "^AIRFLOW__CORE__FERNET_KEY=" .env || grep -q "^AIRFLOW__CORE__FERNET_KEY=auto_generated$" .env; then
+            FERNET=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || openssl rand -base64 44)
+            if grep -q "^AIRFLOW__CORE__FERNET_KEY=" .env; then
+                sed -i "s|^AIRFLOW__CORE__FERNET_KEY=.*|AIRFLOW__CORE__FERNET_KEY=${FERNET}|" .env
+            else
+                echo "AIRFLOW__CORE__FERNET_KEY=${FERNET}" >> .env
+            fi
+        fi
+        
+        if ! grep -q "^AIRFLOW__API_AUTH__JWT_SECRET=" .env || grep -q "^AIRFLOW__API_AUTH__JWT_SECRET=auto_generated$" .env; then
+            JWT_SEC=$(openssl rand -base64 32 | tr -d '\n')
+            if grep -q "^AIRFLOW__API_AUTH__JWT_SECRET=" .env; then
+                sed -i "s|^AIRFLOW__API_AUTH__JWT_SECRET=.*|AIRFLOW__API_AUTH__JWT_SECRET=${JWT_SEC}|" .env
+            else
+                echo "AIRFLOW__API_AUTH__JWT_SECRET=${JWT_SEC}" >> .env
+            fi
+        fi
+        
+        # Аналогично для API_SECRET и WEB_SECRET при необходимости
+        for KEY in "AIRFLOW__API__SECRET_KEY" "AIRFLOW__WEBSERVER__SECRET_KEY"; do
+            if ! grep -q "^${KEY}=" .env || grep -q "^${KEY}=auto_generated$" .env; then
+                VAL=$(openssl rand -base64 32 | tr -d '\n')
+                if grep -q "^${KEY}=" .env; then
+                    sed -i "s|^${KEY}=.*|${KEY}=${VAL}|" .env
+                else
+                    echo "${KEY}=${VAL}" >> .env
+                fi
+            fi
+        done
+        
+        echo "✅ Недостающие секреты сгенерированы"
+    fi
 fi
 
 # 4. Настройка прав пользователя
@@ -88,7 +145,6 @@ if [ "$REBUILD" = true ]; then
     echo "♻️  Принудительная пересборка (--no-cache)..."
     docker compose build --pull --no-cache
 else
-    # Первая сборка всегда с --no-cache, последующие используют кэш
     if [ ! -f .build_done ]; then
         echo "🆕 Первая сборка --no-cache для чистоты..."
         docker compose build --pull --no-cache

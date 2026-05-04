@@ -161,11 +161,7 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
     user: "0:0"
-    depends_on:  # ← Важно!
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    
 
 volumes:
   postgres-db-volume:
