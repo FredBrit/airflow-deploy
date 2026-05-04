@@ -147,28 +147,25 @@ services:
         echo "✅ Создаём директории..."
         mkdir -p /opt/airflow/{logs,dags,plugins,config}
         
-        echo "✅ Инициализируем БД..."
-        airflow db migrate
-        
-        echo "✅ Создаём админа (если не существует)..."
-        airflow users create \
-          --username "${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
-          --firstname Admin \
-          --lastname User \
-          --email "admin@localhost" \
-          --role Admin \
-          --password "${_AIRFLOW_WWW_USER_PASSWORD:-admin}" \
-          --ignore-exist
-        
         echo "✅ Фиксим права..."
         chown -R "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}" /opt/airflow/{logs,dags,plugins,config}
         
-        echo "🎉 Airflow ready!"
+        echo "✅ Запускаем миграцию и создание админа через официальный entrypoint..."
+        # exec /entrypoint подготавливает Python-окружение, ставит pip-пакеты 
+        # и обрабатывает флаги _AIRFLOW_DB_MIGRATE и _AIRFLOW_WWW_USER_CREATE
+        exec /entrypoint airflow db migrate
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
     user: "0:0"
+    depends_on:  # ← Важно!
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres-db-volume:

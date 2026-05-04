@@ -101,7 +101,7 @@ fi
 
 # 6. Инициализация БД
 echo "🗄️  Инициализируем БД и создаём админа..."
-docker compose run --rm --no-deps airflow-init
+docker compose run --rm airflow-init
 
 # 7. Запуск сервисов
 echo "🌐 Запускаем сервисы в фоне..."
