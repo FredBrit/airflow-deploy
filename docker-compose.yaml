@@ -39,7 +39,7 @@ x-airflow-common: &airflow-common
     
     # === MISC ===
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    
     
   volumes:
     - /opt/airflow/dags:/opt/airflow/dags
