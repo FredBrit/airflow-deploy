@@ -155,18 +155,39 @@ else
     fi
 fi
 
-# 6. Инициализация БД
+# 6. Инициализация БД и синхронизация пароля админа
 echo "🗄️  Инициализируем БД и создаём админа..."
 docker compose run --rm airflow-init
+
+# 🔐 Синхронизируем пароль админа (если .env изменился)
+echo "🔐 Синхронизируем пароль админа..."
+ADMIN_USER=$(grep '^_AIRFLOW_WWW_USER_USERNAME=' .env | cut -d'=' -f2)
+ADMIN_PASS=$(grep '^_AIRFLOW_WWW_USER_PASSWORD=' .env | cut -d'=' -f2)
+
+# Пробуем обновить пароль; если пользователь не существует — создаём
+docker compose exec -T airflow-apiserver airflow users update \
+  --username "${ADMIN_USER}" \
+  --firstname Admin \
+  --lastname User \
+  --email "admin@localhost" \
+  --role Admin \
+  --password "${ADMIN_PASS}" \
+  2>/dev/null || \
+docker compose exec -T airflow-apiserver airflow users create \
+  --username "${ADMIN_USER}" \
+  --firstname Admin \
+  --lastname User \
+  --email "admin@localhost" \
+  --role Admin \
+  --password "${ADMIN_PASS}"
+
+echo "✅ Пароль админа синхронизирован"
 
 # 7. Запуск сервисов
 echo "🌐 Запускаем сервисы в фоне..."
 docker compose up -d
 
 # 8. Вывод учетных данных
-ADMIN_USER=$(grep '^_AIRFLOW_WWW_USER_USERNAME=' .env | cut -d'=' -f2)
-ADMIN_PASS=$(grep '^_AIRFLOW_WWW_USER_PASSWORD=' .env | cut -d'=' -f2)
-
 echo ""
 echo "========================================="
 echo "🎉 Airflow успешно развернут!"
