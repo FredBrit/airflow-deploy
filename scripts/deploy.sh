@@ -155,11 +155,27 @@ else
     fi
 fi
 
-# 6. Инициализация БД и синхронизация пароля админа
+# 6. Инициализация БД
 echo "🗄️  Инициализируем БД и создаём админа..."
 docker compose run --rm airflow-init
 
-# 🔐 Синхронизируем пароль админа (если .env изменился)
+# 7. Запуск сервисов
+echo "🌐 Запускаем сервисы в фоне..."
+docker compose up -d
+
+# 🔐 Синхронизируем пароль админа (ТОЛЬКО ПОСЛЕ того, как apiserver запустился)
+# Ждём, пока контейнер станет healthy (макс. 60 секунд)
+echo "⏳ Ждём запуска airflow-apiserver..."
+for i in {1..12}; do
+    if docker compose ps airflow-apiserver --format json 2>/dev/null | grep -q '"Health":"healthy"'; then
+        echo "✅ airflow-apiserver готов"
+        break
+    fi
+    echo "⏱  Попытка $i/12... ждём 5 секунд"
+    sleep 5
+done
+
+# Теперь синхронизируем пароль
 echo "🔐 Синхронизируем пароль админа..."
 ADMIN_USER=$(grep '^_AIRFLOW_WWW_USER_USERNAME=' .env | cut -d'=' -f2)
 ADMIN_PASS=$(grep '^_AIRFLOW_WWW_USER_PASSWORD=' .env | cut -d'=' -f2)
@@ -182,10 +198,6 @@ docker compose exec -T airflow-apiserver airflow users create \
   --password "${ADMIN_PASS}"
 
 echo "✅ Пароль админа синхронизирован"
-
-# 7. Запуск сервисов
-echo "🌐 Запускаем сервисы в фоне..."
-docker compose up -d
 
 # 8. Вывод учетных данных
 echo ""
