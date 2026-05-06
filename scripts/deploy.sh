@@ -176,28 +176,38 @@ for i in {1..12}; do
 done
 
 # Теперь синхронизируем пароль
+# ❗ Важно: запускаем от пользователя 'airflow', т.к. airflow CLI установлен в его HOME
 echo "🔐 Синхронизируем пароль админа..."
 ADMIN_USER=$(grep '^_AIRFLOW_WWW_USER_USERNAME=' .env | cut -d'=' -f2)
 ADMIN_PASS=$(grep '^_AIRFLOW_WWW_USER_PASSWORD=' .env | cut -d'=' -f2)
 
-# Пробуем обновить пароль; если пользователь не существует — создаём
-docker compose exec -T airflow-apiserver airflow users update \
-  --username "${ADMIN_USER}" \
-  --firstname Admin \
-  --lastname User \
-  --email "admin@localhost" \
-  --role Admin \
-  --password "${ADMIN_PASS}" \
-  2>/dev/null || \
-docker compose exec -T airflow-apiserver airflow users create \
-  --username "${ADMIN_USER}" \
-  --firstname Admin \
-  --lastname User \
-  --email "admin@localhost" \
-  --role Admin \
-  --password "${ADMIN_PASS}"
+# Функция для безопасного выполнения airflow команд
+run_airflow_cmd() {
+    docker compose exec -u airflow -T airflow-apiserver bash -c "
+        export PATH=\$PATH:/home/airflow/.local/bin
+        airflow \$@
+    " -- "$@"
+}
 
-echo "✅ Пароль админа синхронизирован"
+# Пробуем обновить пароль; если пользователь не существует — создаём
+if run_airflow_cmd users update \
+  --username "${ADMIN_USER}" \
+  --firstname Admin \
+  --lastname User \
+  --email "admin@localhost" \
+  --role Admin \
+  --password "${ADMIN_PASS}" 2>/dev/null; then
+    echo "✅ Пароль админа обновлён"
+else
+    run_airflow_cmd users create \
+      --username "${ADMIN_USER}" \
+      --firstname Admin \
+      --lastname User \
+      --email "admin@localhost" \
+      --role Admin \
+      --password "${ADMIN_PASS}"
+    echo "✅ Пользователь админа создан"
+fi
 
 # 8. Вывод учетных данных
 echo ""
