@@ -1,4 +1,13 @@
-version: '3.8'
+# ═══════════════════════════════════════════════════════════════════════════
+# Airflow 3 + CeleryExecutor для сервера 2 vCPU / 4 GB RAM (минимум).
+#
+# Лимиты в deploy.resources.limits рассчитаны на ~2.6 GB суммарно —
+# остаётся ~1.4 GB для ОС, Docker daemon и swap.
+#
+# Если у вас 4 vCPU / 8 GB    → увеличьте memory в 1.5–2 раза
+# Если у вас 4 vCPU / 16 GB   → увеличьте memory в 3–4 раза
+# Для продакшена минимум:     → 4 vCPU / 16 GB
+# ═══════════════════════════════════════════════════════════════════════════
 
 x-airflow-common: &airflow-common
   build: .
@@ -9,46 +18,63 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: '60'
-    
+
+    # Глобальные лимиты параллелизма — не даём Airflow перегружать слабый сервер
+    AIRFLOW__CORE__PARALLELISM: '8'
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: '4'
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: '2'
+
     # === DATABASE ===
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
-    
+    # Ограничиваем размер пула соединений — иначе на слабом сервере Postgres захлёбывается
+    AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: '5'
+    AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: '5'
+
     # === CELERY ===
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     AIRFLOW__CELERY__WORKER_CONCURRENCY: '2'
     AIRFLOW__CELERY__TASK_ACKS_LATE: 'True'
     AIRFLOW__CELERY__BROKER_TRANSPORT_OPTIONS: '{"visibility_timeout": 3600}'
-    
+
     # === API / WEBSERVER ===
     AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
     AIRFLOW__API__BASE_URL: ${AIRFLOW__API__BASE_URL:-http://localhost:8080}
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
     AIRFLOW__WEBSERVER__SESSION_COOKIE_DOMAIN: ${AIRFLOW_WEBSERVER__SESSION_COOKIE_DOMAIN:-localhost}
+    # Меньше воркеров веб-сервера = меньше памяти. 2 — оптимум для 4 ГБ.
+    AIRFLOW__WEBSERVER__WORKERS: '2'
+    AIRFLOW__WEBSERVER__WORKER_REFRESH_BATCH_SIZE: '0'
+    # Не пересчитываем FAB-права на каждый запрос — заметно снижает CPU
+    AIRFLOW__WEBSERVER__UPDATE_FAB_PERMS: 'False'
 
     # === JWT Auth ===
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
-    
-    # === DAG PROCESSOR & SCHEDULER ===
-    AIRFLOW__DAG_PROCESSOR__BUNDLE_REFRESH_CHECK_INTERVAL: '300'
+
+    # === DAG PROCESSOR & SCHEDULER (тюнинг под слабое железо) ===
+    AIRFLOW__DAG_PROCESSOR__BUNDLE_REFRESH_CHECK_INTERVAL: '600'  # было 300
     AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: '7200'
     AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: '1'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: '30'
     AIRFLOW__SCHEDULER__MAX_DAGRUNS_PER_LOOP_TO_SCHEDULE: '5'
-    
+    # Ключевой параметр: планировщик не будет в цикле дёргать парсинг DAG'ов
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: '60'
+    AIRFLOW__SCHEDULER__PARSING_PROCESSES: '1'
+
     # === LOGGING ===
     AIRFLOW__LOGGING__DELETE_LOCAL_LOGS_AFTER_EXECUTION: 'True'
-    
+
     # === MISC ===
     AIRFLOW_CONFIG: /opt/airflow-deploy/config/airflow.cfg
-    
-    
+
   volumes:
-    - /opt/airflow/dags:/opt/airflow-deploy/dags
-    - /opt/airflow/logs:/opt/airflow-deploy/logs
-    - /opt/airflow/plugins:/opt/airflow-deploy/plugins
-    - /opt/airflow/config:/opt/airflow-deploy/config
+    # Относительные пути — docker compose разрешает их от места compose-файла.
+    # Больше не будет рассинхрона /opt/airflow vs /opt/airflow-deploy.
+    - ./dags:/opt/airflow-deploy/dags
+    - ./logs:/opt/airflow-deploy/logs
+    - ./plugins:/opt/airflow-deploy/plugins
+    - ./config:/opt/airflow-deploy/config
   user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}"
   depends_on: &airflow-common-depends-on
     redis: { condition: service_healthy }
@@ -57,15 +83,17 @@ x-airflow-common: &airflow-common
 services:
   postgres:
     image: postgres:13
-    ports:
-      - "5432:5432"
+    # Порт наружу не публикуем — БД нужна только контейнерам Airflow.
+    # Если нужен доступ с хоста для отладки — раскомментируйте, но только для localhost:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-      - /opt/airflow-deploy/config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
@@ -73,6 +101,11 @@ services:
       retries: 5
       start_period: 10s
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
 
   redis:
     image: redis:7.2-bookworm
@@ -83,6 +116,11 @@ services:
       timeout: 5s
       retries: 20
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
 
   airflow-apiserver:
     <<: *airflow-common
@@ -94,11 +132,17 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 45s
+      # На слабом железе первый старт с миграциями может идти долго
+      start_period: 120s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
   airflow-scheduler:
     <<: *airflow-common
@@ -108,10 +152,16 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 60s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
   airflow-dag-processor:
     <<: *airflow-common
@@ -120,6 +170,11 @@ services:
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
 
   airflow-worker:
     <<: *airflow-common
@@ -132,6 +187,11 @@ services:
       <<: *airflow-common-depends-on
       airflow-apiserver: { condition: service_healthy }
       airflow-init: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
   airflow-triggerer:
     <<: *airflow-common
@@ -140,6 +200,11 @@ services:
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
 
   airflow-init:
     <<: *airflow-common
@@ -149,12 +214,12 @@ services:
       - |
         echo "✅ Создаём директории..."
         mkdir -p /opt/airflow-deploy/{logs,dags,plugins,config}
-        
+
         echo "✅ Фиксим права..."
         chown -R "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}" /opt/airflow-deploy/{logs,dags,plugins,config}
-        
+
         echo "✅ Запускаем миграцию и создание админа через официальный entrypoint..."
-        # exec /entrypoint подготавливает Python-окружение, ставит pip-пакеты 
+        # exec /entrypoint подготавливает Python-окружение, ставит pip-пакеты
         # и обрабатывает флаги _AIRFLOW_DB_MIGRATE и _AIRFLOW_WWW_USER_CREATE
         exec /entrypoint airflow db migrate
     environment:
@@ -164,7 +229,11 @@ services:
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
     user: "0:0"
-    
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
 
 volumes:
   postgres-db-volume:
