@@ -1,20 +1,32 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 echo "🚀 Airflow Auto-Deploy Script"
 echo "==============================="
 
+# 0. Определяем корень проекта по расположению самого скрипта
+#    Это избавляет от хардкода /opt/airflow-deploy и работает из любого места
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(dirname "$SCRIPT_DIR")"
+
+if [ ! -d "$BASE_DIR" ]; then
+    echo "❌ Каталог проекта не найден: $BASE_DIR"
+    exit 1
+fi
+cd "$BASE_DIR"
+echo "📂 Рабочий каталог: $BASE_DIR"
+
 # 1. Установка системных зависимостей
 echo "📦 Проверяем зависимости..."
 if command -v apt-get &>/dev/null; then
-    sudo apt-get update -y >/dev/null 2>&1
+    sudo apt-get update -y >/dev/null 2>&1 || true
     sudo apt-get install -y --no-install-recommends \
         git curl ca-certificates gnupg \
         python3 python3-pip openssl \
         docker.io docker-compose-plugin >/dev/null 2>&1 || true
 fi
 
-# Устанавливаем cryptography для генерации Fernet Key
+# cryptography нужна для генерации Fernet Key
 pip3 install --break-system-packages cryptography >/dev/null 2>&1 || \
 python3 -m pip install --break-system-packages cryptography >/dev/null 2>&1 || true
 
@@ -28,8 +40,6 @@ if ! docker compose version &>/dev/null; then
 fi
 
 # 2. Подготовка директорий
-BASE_DIR="/opt/airflow-deploy"
-cd "$BASE_DIR" || exit 1
 mkdir -p logs dags plugins config/postgres scripts
 
 # 3. Генерация .env и критичных секретов
@@ -60,6 +70,8 @@ if [ ! -f .env ]; then
     sed -i "s|^_AIRFLOW_WWW_USER_PASSWORD=.*|_AIRFLOW_WWW_USER_PASSWORD=admin|" .env
 
     echo "✅ Секреты сохранены в .env"
+else
+    echo "ℹ️  .env уже существует — оставляем как есть"
 fi
 
 # 4. Настройка прав
@@ -67,13 +79,9 @@ export AIRFLOW_UID=$(id -u)
 export AIRFLOW_GID=$(id -g)
 
 # 5. Сборка образа
-echo "🏗️  Собираем образ..."
-if [ ! -f .build_done ]; then
-    docker compose build --pull --no-cache
-    touch .build_done
-else
-    docker compose build --pull
-fi
+#    ВАЖНО: без --no-cache — используем кэш слоёв и кэш-маунты apt из Dockerfile
+echo "🏗️  Собираем образ (кэш включён)..."
+docker compose build --pull
 
 # 6. Инициализация БД
 echo "🗄️  Инициализируем БД..."
@@ -85,9 +93,14 @@ docker compose up -d
 
 # 8. Настройка доступа admin/admin
 echo "⏳ Ждём готовности API-сервера..."
-for i in {1..12}; do
+for i in {1..24}; do
     if docker compose ps airflow-apiserver --format json 2>/dev/null | grep -q '"Health":"healthy"'; then
+        echo "✅ API-сервер готов"
         break
+    fi
+    if [ "$i" -eq 24 ]; then
+        echo "⚠️  API-сервер не перешёл в healthy за 120 секунд — продолжаем, но проверьте логи:"
+        echo "    docker compose logs airflow-apiserver"
     fi
     sleep 5
 done
