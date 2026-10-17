@@ -28,7 +28,7 @@ if ! docker compose version &>/dev/null; then
 fi
 
 # 2. Подготовка директорий
-BASE_DIR="/opt/airflow"
+BASE_DIR="/opt/airflow-deploy"
 cd "$BASE_DIR" || exit 1
 mkdir -p logs dags plugins config/postgres scripts
 
