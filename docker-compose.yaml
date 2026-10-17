@@ -41,14 +41,14 @@ x-airflow-common: &airflow-common
     AIRFLOW__LOGGING__DELETE_LOCAL_LOGS_AFTER_EXECUTION: 'True'
     
     # === MISC ===
-    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+    AIRFLOW_CONFIG: /opt/airflow-deploy/config/airflow.cfg
     
     
   volumes:
-    - /opt/airflow/dags:/opt/airflow/dags
-    - /opt/airflow/logs:/opt/airflow/logs
-    - /opt/airflow/plugins:/opt/airflow/plugins
-    - /opt/airflow/config:/opt/airflow/config
+    - /opt/airflow/dags:/opt/airflow-deploy/dags
+    - /opt/airflow/logs:/opt/airflow-deploy/logs
+    - /opt/airflow/plugins:/opt/airflow-deploy/plugins
+    - /opt/airflow/config:/opt/airflow-deploy/config
   user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}"
   depends_on: &airflow-common-depends-on
     redis: { condition: service_healthy }
@@ -65,7 +65,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-      - /opt/airflow/config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - /opt/airflow-deploy/config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
@@ -148,10 +148,10 @@ services:
       - -c
       - |
         echo "✅ Создаём директории..."
-        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        mkdir -p /opt/airflow-deploy/{logs,dags,plugins,config}
         
         echo "✅ Фиксим права..."
-        chown -R "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}" /opt/airflow/{logs,dags,plugins,config}
+        chown -R "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}" /opt/airflow-deploy/{logs,dags,plugins,config}
         
         echo "✅ Запускаем миграцию и создание админа через официальный entrypoint..."
         # exec /entrypoint подготавливает Python-окружение, ставит pip-пакеты 
